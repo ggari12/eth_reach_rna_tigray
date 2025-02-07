@@ -25,29 +25,20 @@ c_types <- ifelse(str_detect(string = data_nms, pattern = "_other$"), "text", "g
 df_tool_data <- readxl::read_excel(data_path, col_types = c_types) |> 
 create_composite_indicators() |> 
   rowwise() |> 
-  mutate(i.hh_size = case_when(hh_size <= 3 ~ "between_1_and_3_members",
-                               hh_size <= 6 ~ "between_4_and_6_members",
-                               hh_size <= 9 ~ "between_7_and_9_members",
-                               hh_size >= 10 ~ "10_or_more_members"),
-         i.respondent_age = case_when(resp_age <= 24 ~ "age_18_24",
-                                      resp_age <= 39 ~ "age_25_39",
-                                      resp_age <= 59 ~ "age_40_59",
-                                      resp_age > 59 ~ "age_60+")
-         ) |>
   ungroup()
 
 # loops -----------------------------------------------------------------------
 # roster
-data_nms_roster <- names(readxl::read_excel(path = data_path, n_max = 5000, sheet = "roster"))
+data_nms_roster <- names(readxl::read_excel(path = data_path, n_max = 2000, sheet = "roster"))
 c_types_roster <- ifelse(str_detect(string = data_nms_roster, pattern = "_other$"), "text", "guess")
 df_loop_roster <- readxl::read_excel(data_path, col_types = c_types_roster, sheet = "roster")
 
-df_raw_loop_roster_data <- df_tool_data |> 
-  select(-`_index`) |> 
-  inner_join(df_loop_roster, by = c("_uuid" = "_submission__uuid"))
+# joining roster loop to main sheet
+df_repeat_hh_roster_data <- df_tool_data %>% 
+  left_join(df_loop_roster, by = c("_uuid" = "_submission__uuid"))
 
 # health
-data_nms_health <- names(readxl::read_excel(path = data_path, n_max = 5000, sheet = "health_ind"))
+data_nms_health <- names(readxl::read_excel(path = data_path, n_max = 2000, sheet = "health_ind"))
 c_types_health <- ifelse(str_detect(string = data_nms_health, pattern = "_other$"), "text", "guess")
 df_loop_health <- readxl::read_excel(data_path, col_types = c_types_health, sheet = "health_ind")
 
@@ -110,7 +101,7 @@ list_log <- df_tool_data_with_audit_time %>%
                         idnk_value = "dnk",
                         sm_separator = "/",
                         log_name = "soft_duplicate_log",
-                        threshold = 25,
+                        threshold = 7,
                         return_all_results = FALSE) %>%
   check_value(uuid_column = "_uuid", values_to_look = c(99, 999, 999, 88, 888, 888)) %>% 
   check_logical_with_list(uuid_column = "_uuid",
@@ -183,7 +174,7 @@ list_log$duplicate_uuid_log <- df_duplicate_uuids
 
 # other logical checks --------------------------------------------------------
 # HH size and roster count mismatch
-df_logic_hh_size_roster_mismatch <- df_raw_loop_roster_data %>%
+df_logic_hh_size_roster_mismatch <- df_repeat_hh_roster_data %>%
   group_by(`_uuid`) %>%
   summarise(roster_count = n(), hh_size = unique(hh_size)) %>%
   filter(hh_size != roster_count) %>%
@@ -205,14 +196,14 @@ list_log$df_logic_hh_size_roster_mismatch_log <- df_logic_hh_size_roster_mismatc
 
 # Health services are not accessible to persons with disabilities, 
 # but all washington group indicators say no difficulty 
-df_logic_c_barriers_but_wgq_no_difficulty <- df_raw_loop_roster_data %>% 
+df_logic_c_barriers_but_wgq_no_difficulty <- df_repeat_hh_roster_data %>% 
   filter(health_barriers %in% c("health_services_are_not_accessible_to_persons_with_disabilities"),
-         difficulty_seeing.y %in% c("no_difficulty"),
-         difficulty_hearing.y %in% c("no_difficulty"),
-         difficulty_walking.y %in% c("no_difficulty"),
-         difficulty_remembering.y %in% c("no_difficulty"),
-         difficulty_self_care.y %in% c( "no_difficulty"),
-         difficulty_communicating.y %in% c( "no_difficulty")) %>%
+         wgq_vision %in% c("no_difficulty"),
+         wgq_hearing %in% c("no_difficulty"),
+         wgq_mobility %in% c("no_difficulty"),
+         wgq_cognition %in% c("no_difficulty"),
+         wgq_self_care %in% c( "no_difficulty"),
+         wgq_communication %in% c( "no_difficulty")) %>%
   mutate(i.check.uuid = `_uuid`,
          i.check.change_type = "change_response",
          i.check.question = "health_barriers",
@@ -230,15 +221,15 @@ df_logic_c_barriers_but_wgq_no_difficulty <- df_raw_loop_roster_data %>%
 list_log$df_logic_c_barriers_but_wgq_no_difficulty_log <- df_logic_c_barriers_but_wgq_no_difficulty
 
 # HH reports difficulty walking, but main transportation mode to nearest health post is walking.
-df_logic_c_hh_reports_difficulty_walking_but_walking_hp <- df_raw_loop_roster_data %>% 
-  filter(difficulty_walking.y == "some_difficulty" |
-         difficulty_walking.y == "lot_of_difficulty" |
-         difficulty_walking.y == "cannot_do",
+df_logic_c_hh_reports_difficulty_walking_but_walking_hp <- df_repeat_hh_roster_data %>% 
+  filter(wgq_mobility == "some_difficulty" |
+         wgq_mobility == "lot_of_difficulty" |
+         wgq_mobility == "cannot_do",
          health_post_transportation == "walking") %>%
   mutate(i.check.uuid = `_uuid`,
          i.check.change_type = "change_response",
-         i.check.question = "difficulty_walking.y",
-         i.check.old_value = as.character(difficulty_walking.y),
+         i.check.question = "wgq_mobility",
+         i.check.old_value = as.character(wgq_mobility),
          i.check.new_value = "",
          i.check.issue = "hh_reports_difficulty_walking_but_walking_health_post",
          i.check.description = "",
@@ -252,15 +243,15 @@ df_logic_c_hh_reports_difficulty_walking_but_walking_hp <- df_raw_loop_roster_da
 list_log$df_logic_c_hh_reports_difficulty_walking_but_walking_hp_log <- df_logic_c_hh_reports_difficulty_walking_but_walking_hp
 
 # HH reports difficulty walking, but main transportation mode to nearest health centre is walking.
-df_logic_c_hh_reports_difficulty_walking_but_walking_hc <- df_raw_loop_roster_data %>% 
-  filter(difficulty_walking.y == "some_difficulty" |
-         difficulty_walking.y == "lot_of_difficulty" |
-         difficulty_walking.y == "cannot_do",
+df_logic_c_hh_reports_difficulty_walking_but_walking_hc <- df_repeat_hh_roster_data %>% 
+  filter(wgq_mobility == "some_difficulty" |
+         wgq_mobility == "lot_of_difficulty" |
+         wgq_mobility == "cannot_do",
          health_centre_transportation == "walking") %>%
   mutate(i.check.uuid = `_uuid`,
          i.check.change_type = "change_response",
-         i.check.question = "difficulty_walking.y",
-         i.check.old_value = as.character(difficulty_walking.y),
+         i.check.question = "wgq_mobility",
+         i.check.old_value = as.character(wgq_mobility),
          i.check.new_value = "",
          i.check.issue = "hh_reports_difficulty_walking_but_walking_health_centre",
          i.check.description = "",
@@ -274,15 +265,15 @@ df_logic_c_hh_reports_difficulty_walking_but_walking_hc <- df_raw_loop_roster_da
 list_log$df_logic_c_hh_reports_difficulty_walking_but_walking_hc_log <- df_logic_c_hh_reports_difficulty_walking_but_walking_hc
 
 # HH reports difficulty walking, but main transportation mode to nearest hospital is walking.
-df_logic_c_hh_reports_difficulty_walking_but_walking_hospital <- df_raw_loop_roster_data %>% 
-  filter(difficulty_walking.y == "some_difficulty" |
-         difficulty_walking.y == "lot_of_difficulty" |
-         difficulty_walking.y == "cannot_do",
+df_logic_c_hh_reports_difficulty_walking_but_walking_hospital <- df_repeat_hh_roster_data %>% 
+  filter(wgq_mobility == "some_difficulty" |
+         wgq_mobility == "lot_of_difficulty" |
+         wgq_mobility == "cannot_do",
          hospital_transportation == "walking") %>%
   mutate(i.check.uuid = `_uuid`,
          i.check.change_type = "change_response",
-         i.check.question = "difficulty_walking.y",
-         i.check.old_value = as.character(difficulty_walking.y),
+         i.check.question = "wgq_mobility",
+         i.check.old_value = as.character(wgq_mobility),
          i.check.new_value = "",
          i.check.issue = "hh_reports_difficulty_walking_but_walking_hospital",
          i.check.description = "",
@@ -299,7 +290,7 @@ list_log$df_logic_c_hh_reports_difficulty_walking_but_walking_hospital_log <- df
 cols_with_integer_values <- df_survey  %>% filter(type %in% c("integer"))  %>% pull(name)
 
 df_999_data <- purrr::map_dfr(.x = cols_with_integer_values,
-                              .f = ~ {df_raw_loop_roster_data  %>% 
+                              .f = ~ {df_repeat_hh_roster_data  %>% 
                                   dplyr::filter(str_detect(string = !!sym(.x), pattern = "^-[9]{2,4}$|^[9]{2,4}$")) %>%
                                   dplyr::mutate(i.check.type = "change_response",
                                                 i.check.question = .x,
@@ -341,11 +332,11 @@ list_log$logic_c_handle_999_other_log <- df_999_data_other
 
 # silhouette --------------------------------------------------------------
 # NOTE: the column for "col_admin" is kept in the data
-omit_cols_sil <- c("start", "end", "today", "duration", "duration_minutes","deviceid", 
-                   "audit", "audit_URL", "instance_name", "end_survey", "hh_location",	
-                   "_hh_location_latitude",	"_hh_location_longitude",	"_hh_location_altitude",
-                   "_hh_location_precision", "_id", "_submission_time", "_validation_status", 
-                   "_notes", "_status", "_submitted_by", "_tags", "_index" )
+omit_cols_sil <- c("start", "end", "today", "duration", "duration_minutes","duration_audit_sum_all_ms",	
+                   "duration_audit_sum_all_minutes", "deviceid", "audit", "audit_URL", "instance_name", 
+                   "end_survey", "hh_location",	"_hh_location_latitude",	"_hh_location_longitude",	
+                   "_hh_location_altitude", "_hh_location_precision", "_id", "_submission_time", 
+                   "_validation_status", "_notes", "_status", "_submitted_by", "_tags", "_index" )
 
 data_similartiy_sil <- df_tool_data %>% 
   select(- any_of(omit_cols_sil), - matches("_note$|^note_"))
@@ -461,4 +452,3 @@ openXL(file = paste0("outputs/", butteR::date_file_prefix(),
                      "_combined_checks_eth_rna.xlsx"))
 
 ###############################################################################
-
