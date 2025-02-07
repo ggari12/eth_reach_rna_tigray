@@ -1,0 +1,344 @@
+---
+title: "ETH24XX: Field Data Collection Tracker"
+author: "REACH-Initiative"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: false
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+knit: (function(inputFile, encoding) {rmarkdown::render(inputFile, encoding = encoding, output_file = paste0(dirname(inputFile), '/eth_rna_field_dc_tracker_', format(Sys.Date(), '%Y_%m_%d'),'.html')) })
+---
+
+```{r logo, echo=FALSE}
+htmltools::a(href = "https://www.reach-initiative.org",
+             target = "_blank",
+             htmltools::img(src = knitr::image_uri("../support_files/Logo_Reach_RGB_1.png"),
+                            alt = "REACH logo",
+                            style = 'position:absolute; top:-1; right:0; padding:0; margin:20; width:250px')
+             )
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+# read packages
+library(tidyverse)
+library(lubridate)
+library(glue)
+library(leaflet)
+
+df_logical_check_description <- readr::read_csv("../support_files/rna_logical_check_list.csv") %>% 
+    rename(check_number = check_id, check_description = description) %>% 
+    janitor::clean_names() %>% 
+    select(check_number, check_description) %>% 
+    mutate(check_number = as.character(check_number))
+
+df_samples <- readxl::read_excel("../support_files/rna_sample_size.xlsx")
+
+df_for_colnames <- df_samples %>% 
+    select(admin4) %>% 
+    unique()
+
+df_samples_required <- df_samples %>% 
+    select(admin4, tot_sample_size) 
+
+df_tool_data <- readxl::read_excel("../inputs/ETH24XX_RNA_Tigray_HH_data.xlsx") %>%
+    mutate(uuid = `_uuid`,
+           start_date = as_date(start),
+           start = as_datetime(start),
+           end = as_datetime(end),
+           admin4 = as.character(admin4),
+           latitude = as.numeric(`_hh_location_latitude`),
+           longitude = as.numeric(`_hh_location_longitude`))
+
+# days that contain data for refugees
+df_days_for_data_collection <- df_tool_data %>% select(start_date) %>% unique() %>% arrange(start_date) %>% pull()
+
+df_data_support_cl_log <- df_tool_data %>% 
+  select(uuid, admin4, latitude,	longitude)
+
+# cleaning log handling
+df_cl_log <- readxl::read_excel("../inputs/main_combined_checks_eth_rna.xlsx") %>% 
+    filter(!str_detect(string = admin4, pattern = fixed('test', ignore_case = TRUE))) %>% 
+    mutate(change_type = ifelse(is.na(change_type), "apply_suggested_change", change_type)) %>% 
+    left_join(df_data_support_cl_log, by = "uuid")
+
+# change_response logs that affect stats in the data collection progress
+cl_log_change_response <- df_cl_log %>% 
+    filter(change_type == "change_response", 
+           !is.na(new_value), reviewed == 1, 
+           change_type != "no_action",
+           !str_detect(string = question, "\\/")) %>% 
+    select(uuid, question, new_value)
+
+# updated tool data
+df_updated_tool_data <- df_tool_data
+
+# get uuids from cleaning log
+uuids_chg_response <- cl_log_change_response %>% pull(uuid) %>% unique()
+
+for (current_uuid in uuids_chg_response) {
+    current_uuid_data <- cl_log_change_response %>% 
+        filter(uuid == current_uuid) %>% 
+        mutate(new_value = ifelse(question == "enumerator_id", as.numeric(new_value), new_value)) %>% 
+        pivot_wider(names_from = "question", values_from = "new_value", uuid)
+    print(current_uuid_data)
+    # process current updates
+    df_current_updated <- df_updated_tool_data 
+    
+    # update the parent dataset with current updates
+    df_updated_tool_data <- df_current_updated
+}
+
+# enumerator performance data
+df_enum_performance <- df_updated_tool_data %>% 
+    mutate(int.survey_time_interval = lubridate::time_length(end - start, unit = "min"),
+           int.survey_time_interval = ceiling(int.survey_time_interval))
+
+# surveys for deletion
+df_cl_deletion <- df_cl_log |> 
+  filter(change_type %in% "remove_survey", reviewed == 1, change_type != "no_action") %>% 
+  distinct(uuid)
+
+# functions for changing some options in the table
+dt_set_options<- function(x){
+  DT::datatable(x,
+                options = list(autoWidth = F,
+                               dom= 't',
+                               list(list(width = '20%', targets = list(1,2,3,4,5)))
+                               )
+                )
+}
+
+dt_with_modified_options <- function(x){
+  DT::datatable(x,
+                rownames = FALSE,
+                options = list(
+                  columnDefs = list(list(className = 'dt-center', targets = list(1,2,3,4,5))),
+                  pageLength = 10,
+                  initComplete = JS(
+                    "function(settings, json) {",
+                    "$(this.api().table().header()).css({'background-color': '#333', 'color': '#fff'});",
+                    "}")
+                )
+  )
+}
+
+dt_options_fewcols <- function(x){
+  DT::datatable(x,
+                rownames = FALSE,
+                options = list(
+                  pageLength = 10,
+                  initComplete = JS(
+                    "function(settings, json) {",
+                    "$(this.api().table().header()).css({'background-color': '#333', 'color': '#fff'});",
+                    "}")
+                )
+  )
+}
+
+dt_enum_performance_options <- function(x){
+  DT::datatable(x,
+                rownames = FALSE,
+                filter = 'top',
+                options = list(
+                  columnDefs = list(list(className = 'dt-center', targets = list(1,2))),
+                  pageLength = 10,
+                  initComplete = JS(
+                    "function(settings, json) {",
+                    "$(this.api().table().header()).css({'background-color': '#333', 'color': '#fff'});",
+                    "}"),
+                  order = list(list(1, 'desc'), list(0, 'asc'), list(3, 'desc'))
+                )
+  )
+}
+```
+
+## Summary on the surveys done
+
+>Total surveys: **`r df_updated_tool_data %>% nrow()`**,\
+Surveys for deletion: **`r nrow(df_cl_deletion)`**,\
+Last date of data collection: **`r df_days_for_data_collection[length(df_days_for_data_collection)]`**.
+
+### Summary on the surveys per location
+
+```{r, echo = FALSE}
+df_sample_per_admin4 <- df_samples_required %>% 
+    group_by(admin4) %>% 
+    summarise(samples = sum(tot_sample_size, na.rm = TRUE))
+
+df_cl_surveys_for_deletion <- df_cl_log %>% 
+  filter(change_type == "remove_survey", change_type != "no_action", 
+         reviewed == 1) %>% 
+  rename(admin4 = admin4.x) %>% 
+  group_by(admin4) %>% 
+  distinct(uuid) %>%
+  summarise(surveys_for_deletion = n())
+
+  df_xt <- df_updated_tool_data %>% 
+    group_by(admin4) %>% 
+    summarise(surveys_completed = n()) %>% 
+    arrange(admin4) %>% 
+    right_join(df_sample_per_admin4, by = "admin4") %>% 
+    left_join(df_cl_surveys_for_deletion, by = "admin4") %>% 
+    mutate(surveys_completed = ifelse(is.na(surveys_completed), 0, surveys_completed),
+           surveys_for_deletion = ifelse(is.na(surveys_for_deletion), 0, surveys_for_deletion),
+           int.surveys_and_deletion = surveys_completed - surveys_for_deletion,
+           remaining_surveys = samples - int.surveys_and_deletion) %>% 
+    left_join(df_for_colnames, by = "admin4") %>% 
+    select(-c(int.surveys_and_deletion)) 
+  
+  df_xt %>% 
+    DT::datatable()
+```
+
+## Gender Disaggregation
+
+<center>**Gender of Interview Tracking or Disaggregation** </center> </br> 
+
+```{r, echo = FALSE}
+# Gender disaggregation by respondent status
+df_gender_disaggregation <- df_tool_data %>% 
+    group_by(admin4) %>% 
+    # Count occurrences of each gender within each admin4 region
+    count(resp_gender = ifelse(is.na(hoh_gender), resp_gender, hoh_gender), name = "count") %>% 
+    # Reshape the data to have separate columns for each gender
+    pivot_wider(names_from = resp_gender, 
+                values_from = count, 
+                values_fill = 0) %>%  # Replace missing values with 0
+    # Calculate gender percentages within each admin4 group
+    mutate(male_percentage = male / (female + male) * 100,
+           female_percentage = female / (female + male) * 100) %>% 
+    # Round percentages to the nearest whole number
+    mutate(across(ends_with("_percentage"), round, 0)) %>% 
+    # Rename percentage columns for better readability
+    rename(`male(%)` = male_percentage,
+           `female(%)` = female_percentage)
+
+# Display the results as an interactive table
+df_gender_disaggregation %>% 
+    DT::datatable()
+```
+
+### Daily enumerator performance
+
+>The average survey time for all the data is: **`r round(mean(df_enum_performance$int.survey_time_interval), 0)`** Minutes
+
+<center> **Number of survey per day of data collection, and average interview duration by enumerator** </center> </br>
+
+```{r, echo = FALSE}
+df_enum_performance %>% 
+  group_by(admin4, start_date, enumerator_id) %>% 
+  summarise(number_of_interviews_done = n(), `average_survey_time(minutes)` = round(mean(int.survey_time_interval, na.rm = TRUE), 0)) %>% 
+  dt_enum_performance_options()
+```
+
+## Looking into the cleaning log:
+
+### a) Number of issues by issue_id
+
+<center> **Number of Flags by Enumerator** </center> </br>
+
+```{r, echo = FALSE}
+df_cl_log |> 
+  group_by(issue) |> 
+  summarise(number_of_issues_by_issue_id = n()) |>
+  # mutate(int.issue_id = str_extract(string = issue_id, pattern = "[0-9]{1,3}")) |> 
+  # left_join(df_logical_check_description, by = c("int.issue_id" = "check_number")) |> 
+  # mutate(issue = ifelse(str_detect(string = issue_id, pattern = "[0-9]{1,3}"), check_description, issue_id)) |> 
+  # select(-c(int.issue_id, check_description))  |> 
+  dt_options_fewcols()
+```
+
+### b) Number of issues by enumerator
+
+```{r, echo = FALSE}
+df_cl_log %>% 
+    rename(admin4 = admin4.x) %>% 
+  group_by(admin4, enumerator_id) %>% 
+  summarise(number_of_issues_by_enumerator_id = n()) %>%
+  dt_options_fewcols()
+```
+
+### c) Number of issues by enumerator and issue_id
+
+```{r, echo = FALSE}
+df_cl_log |> 
+  group_by(enumerator_id, issue) |> 
+  summarise(number_of_issues_by_enumerator_and_issue_id = n()) |>
+  # mutate(int.issue_id = str_extract(string = issue_id, pattern = "[0-9]{1,3}")) |> 
+  # left_join(df_logical_check_description, by = c("int.issue_id" = "check_number")) |> 
+  # mutate(issue = ifelse(str_detect(string = issue_id, pattern = "[0-9]{1,3}"), check_description, issue_id)) |> 
+  # select(-c(int.issue_id, check_description))  |> 
+  dt_options_fewcols()
+```
+
+### d) Enumerators with surveys for deletion
+
+```{r, echo = FALSE}
+df_cl_log %>% 
+  filter(change_type == "remove_survey", 
+         reviewed == 1) %>% 
+    rename(admin4 = admin4.x) %>% 
+  group_by(admin4, enumerator_id) %>% 
+  summarise(number_of_surveys_for_deletion_by_enumerator = n()) %>%
+  dt_options_fewcols()
+```
+
+### e) Map of Survey Distribution
+
+```{r, echo = FALSE, out.width = "100%"}
+# Create a leaflet map for geographic distribution
+ data <- df_tool_data %>%
+   mutate(latitude = as.numeric(`_hh_location_latitude`),
+          longitude = as.numeric(`_hh_location_longitude`))
+
+leaflet(data) %>%
+  addTiles() %>%
+  addMarkers(lng = ~longitude, lat = ~latitude, 
+             popup = ~as.character(`_uuid`),
+             clusterOptions = markerClusterOptions())
+```
+
+### f) Map of surveys for deletion
+
+```{r, echo = FALSE, out.width="100%"}
+# popup
+ labels_pts <- ~sprintf(
+   "<strong>Status and Name: %s</strong><br/>
+       Issue :  <strong>%s</strong><br/>
+       Enumerator ID :  <strong>%s</strong>",
+   int.status, issue, enumerator_id) %>%
+   lapply(htmltools::HTML)
+ 
+ df_cl_log %>%
+   filter(change_type == "remove_survey", reviewed == 1) %>%
+     rename(admin4 = admin4.x) %>%
+   group_by(uuid, admin4, latitude, longitude) %>%
+   summarise(enumerator_id = paste(enumerator_id, collapse = " : "),
+             admin4 = paste(admin4, collapse = " : "),
+             #point_number = paste(point_number, collapse = " : "),
+             change_type = paste(change_type, collapse = " : "),
+             question = paste(question, collapse = " : "),
+             new_value = paste(new_value, collapse = " : "),
+             #issue_id = paste(issue_id, collapse = " : "),
+             issue = paste(issue, collapse = " : ")) %>%
+   unique() %>%
+   mutate(int.status = glue("{admin4}_{admin4}")) %>%
+   leaflet() %>%
+   addTiles() %>%
+   addCircleMarkers(~longitude,
+                    ~latitude,
+                    popup = labels_pts,
+                    radius = 10,
+                    color = "red",
+                    stroke = FALSE, fillOpacity = 0.9,
+                    label = labels_pts,
+                    clusterOptions = markerClusterOptions())
+```
+
+## <strong> Feedback </strong>
+
+This Data Collection Monitoring Report was generated on *`r format(Sys.Date(), format = "%B %d, %Y")`*. For any suggestions or improvements to this product, please feel free to reach out to: getu.gari@reach-initiative.org.
